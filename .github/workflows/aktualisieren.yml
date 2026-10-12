@@ -34,7 +34,7 @@ jobs:
       - name: Seite bereitstellen
         run: |
           mkdir -p _site
-          cp index.html daten.json archiv.json messung.json _site/
+          cp index.html daten.json archiv.json _site/
 
       - uses: actions/upload-pages-artifact@v5
         with:

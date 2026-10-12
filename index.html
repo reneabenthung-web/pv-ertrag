@@ -71,7 +71,7 @@ footer{color:var(--muted);font-size:.78rem;margin-top:18px}
   <section class="block gesamt" id="archiv" hidden>
     <div class="card">
       <h2>Archiv</h2>
-      <p class="muted" style="margin:-6px 0 10px;font-size:.88rem">„Berechnet“ = täglich aus dem eingetretenen Wetter nachgerechnet, „Gemessen“ = Tageswerte aus Loxone (manuell eingespielt).</p>
+      <p class="muted" style="margin:-6px 0 10px;font-size:.88rem">Täglich aus dem eingetretenen Wetter nachgerechnet.</p>
       <div class="summe" id="archivSumme"></div>
     </div>
     <div class="card">
@@ -202,10 +202,10 @@ function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
 }
 
 // ---------- Archiv ----------
-let ARCHIV, MESSUNG = {}, ANLAGE, archivChart, ansicht = 'tage';
+let ARCHIV, ANLAGE, archivChart, ansicht = 'tage';
 
 function zeigeArchiv() {
-  const arch = ARCHIV, mess = MESSUNG, fl = ANLAGE.flaechen;
+  const arch = ARCHIV, fl = ANLAGE.flaechen;
   const tage = Object.keys(arch).filter(k => arch[k].d).sort();
   if (!tage.length) return;
   const tagSum = k => summe(arch[k].d);
@@ -216,57 +216,41 @@ function zeigeArchiv() {
   const monSum = summe(tage.filter(k => k.startsWith(monat)).map(tagSum));
   const best = jahrT.reduce((b, k) => tagSum(k) > tagSum(b) ? k : b);
   const monName = new Date(monat + '-15').toLocaleDateString('de-CH', { month: 'long' });
-  // Messwerte (Loxone) und die Rechnung über dieselben Tage, damit der Vergleich fair ist
-  const messT = Object.keys(mess).filter(k => k.startsWith(jahr) && arch[k] && arch[k].d).sort();
-  const messSum = summe(messT.map(k => mess[k])), messBer = summe(messT.map(tagSum));
 
   $('archivSumme').innerHTML = `
-    <div><div class="muted">${jahr} bis ${datumKurz(letzter)} (berechnet)</div><div class="big">${fmt(jahrSum, 0)} kWh</div></div>
+    <div><div class="muted">${jahr} bis ${datumKurz(letzter)}</div><div class="big">${fmt(jahrSum, 0)} kWh</div></div>
     ${fl.map((f, i) => `<div><div class="muted">${f.name}</div><div class="mid">${fmt(proDach[i], 0)} kWh</div></div>`).join('')}
     <div><div class="muted">pro kWp</div><div class="mid">${fmt(jahrSum / kwp, 0)} kWh</div></div>
     <div><div class="muted">${monName} bisher</div><div class="mid">${fmt(monSum, 0)} kWh</div></div>
-    <div><div class="muted">Bester Tag (${datumKurz(best)})</div><div class="mid">${fmt(tagSum(best))} kWh</div></div>
-    ${messT.length ? `<div><div class="muted">Gemessen bis ${datumKurz(messT[messT.length - 1])}</div><div class="mid">${fmt(messSum, 0)} kWh</div>
-      <div class="muted" style="font-size:.8rem">Rechnung gleiche Tage: ${fmt(messBer, 0)} kWh (${messBer >= messSum ? '+' : ''}${fmt((messBer / messSum - 1) * 100)} %)</div></div>` : ''}`;
+    <div><div class="muted">Bester Tag (${datumKurz(best)})</div><div class="mid">${fmt(tagSum(best))} kWh</div></div>`;
 
-  // Tabelle der letzten 14 Tage, neueste zuerst. Die Prognose wird mit dem Messwert verglichen, sonst mit der Rechnung.
+  // Tabelle der letzten 14 Tage, neueste zuerst
   const zeilen = tage.slice(-14).reverse().map(k => {
-    const e = arch[k], [ic, txt] = WETTER[e.wc] || ['❔', '–'], s = tagSum(k), m = mess[k];
-    const ref = m != null ? m : s;
-    const abw = e.prog != null && ref > 0 ? Math.round((e.prog - ref) / ref * 100) : null;
+    const e = arch[k], [ic, txt] = WETTER[e.wc] || ['❔', '–'], s = tagSum(k);
+    const abw = e.prog != null && s > 0 ? Math.round((e.prog - s) / s * 100) : null;
     return `<tr><td>${datumKurz(k)}</td><td title="${txt}">${ic}</td><td>${fmt(e.sonne)} h</td>
       ${e.d.map(v => `<td>${fmt(v)}</td>`).join('')}<td><strong>${fmt(s)}</strong></td>
-      <td>${m != null ? '<strong>' + fmt(m) + '</strong>' : '–'}</td>
       <td>${e.prog != null ? fmt(e.prog) : '–'}</td><td class="muted">${abw != null ? (abw > 0 ? '+' : '') + abw + ' %' : ''}</td></tr>`;
   }).join('');
   $('archivTabelle').innerHTML = `<tr><th>Tag</th><th></th><th>Sonne</th>${fl.map(f => `<th>${f.name}</th>`).join('')}
-    <th>Berechnet</th><th>Gemessen</th><th>Prognose</th><th>Abw.</th></tr>` + zeilen;
+    <th>Gesamt kWh</th><th>Prognose</th><th>Abw.</th></tr>` + zeilen;
 
   // Diagramm: letzte 60 Tage oder Monatssummen
-  let labels, reihen, prog = null, gemessen;
+  let labels, reihen, prog = null;
   if (ansicht === 'tage') {
     const t = tage.slice(-60);
     labels = t.map(datumKurz);
     reihen = fl.map((_, i) => t.map(k => arch[k].d[i]));
     prog = t.map(k => arch[k].prog ?? null);
-    gemessen = t.map(k => mess[k] ?? null);
   } else {
     const monate = [...new Set(tage.map(k => k.slice(0, 7)))];
     labels = monate.map(m => new Date(m + '-15').toLocaleDateString('de-CH', { month: 'short', year: '2-digit' }));
     reihen = fl.map((_, i) => monate.map(m => +summe(tage.filter(k => k.startsWith(m)).map(k => arch[k].d[i])).toFixed(1)));
-    gemessen = monate.map(m => {
-      const w = Object.keys(mess).filter(k => k.startsWith(m)).map(k => mess[k]);
-      return w.length ? +summe(w).toFixed(1) : null;
-    });
   }
-  const ds = fl.map((f, i) => ({ type: 'bar', label: f.name + ' (kWh)', data: reihen[i], backgroundColor: FARBEN[i % FARBEN.length], stack: 'pv', borderRadius: 2, order: 2 }));
-  if (gemessen.some(v => v != null)) ds.push({
-    type: 'line', label: 'Gemessen (kWh)', data: gemessen, borderColor: c('--text'), backgroundColor: c('--text'),
-    borderWidth: 1.5, pointRadius: ansicht === 'tage' ? 2 : 4, spanGaps: false, order: 0
-  });
+  const ds = fl.map((f, i) => ({ type: 'bar', label: f.name + ' (kWh)', data: reihen[i], backgroundColor: FARBEN[i % FARBEN.length], stack: 'pv', borderRadius: 2 }));
   if (prog && prog.some(v => v != null)) ds.push({
     type: 'line', label: 'Prognose (kWh)', data: prog, borderColor: c('--accent2'), backgroundColor: c('--accent2'),
-    borderWidth: 0, pointRadius: 3, showLine: false, order: 1
+    borderWidth: 0, pointRadius: 3, showLine: false
   });
   if (archivChart) archivChart.destroy();
   archivChart = new Chart($('archivChart'), {
@@ -301,7 +285,7 @@ async function holeJson(datei) {
 async function laden() {
   $('status').textContent = 'Lade …';
   try {
-    const [D, arch, mess] = await Promise.all([holeJson('daten.json'), holeJson('archiv.json'), holeJson('messung.json').catch(() => ({}))]);
+    const [D, arch] = await Promise.all([holeJson('daten.json'), holeJson('archiv.json')]);
     const A = D.anlage, fl = A.flaechen;
     fl.forEach(f => f.kwp = f.module * f.wp / 1000);
     yMax = Math.ceil(Math.max(...D.kw.flat()) + 0.3);
@@ -322,7 +306,7 @@ async function laden() {
       serien: fl.map((f, i) => ({ name: f.name, daten: D.kw[i], farbe: FARBEN[i % FARBEN.length] }))
     });
 
-    ARCHIV = arch; MESSUNG = mess; ANLAGE = A; zeigeArchiv();
+    ARCHIV = arch; ANLAGE = A; zeigeArchiv();
     $('status').textContent = 'Berechnet: ' + new Date(D.stand).toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
   } catch (e) {
     $('status').innerHTML = '<span class="err">Fehler beim Laden: ' + e.message + '</span>';
