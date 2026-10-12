@@ -1,0 +1,58 @@
+# Rechnet die PV-Prognose jede Stunde neu, ergänzt das Archiv und veröffentlicht die Seite.
+# Minute 23, weil GitHub zur vollen Stunde oft stark ausgelastet ist.
+name: PV-Prognose aktualisieren
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  bauen:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prognose und Archiv rechnen
+        shell: pwsh
+        run: ./aktualisieren.ps1
+
+      - name: Seite bereitstellen
+        run: |
+          mkdir -p _site
+          cp index.html daten.json archiv.json _site/
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5
+
+      # Das Archiv einmal pro Tag speichern (beim ersten Lauf nach Mitternacht UTC), damit nicht
+      # jede Stunde ein Commit entsteht. Das hält zugleich den geplanten Ablauf aktiv
+      # (GitHub pausiert ihn sonst nach 60 Tagen ohne Änderung).
+      - name: Archiv speichern
+        run: |
+          heute=$(date -u +%Y-%m-%d)
+          zuletzt=$(git log -1 --format=%cd --date=format:%Y-%m-%d -- archiv.json)
+          if [ "$zuletzt" = "$heute" ] && [ "${{ github.event_name }}" = "schedule" ]; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archiv.json
+          git commit -m "Archiv bis $heute" || exit 0
+          git push

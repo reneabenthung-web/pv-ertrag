@@ -1,0 +1,13 @@
+{
+  "ort": { "name": "Gamprin", "lat": 47.23, "lon": 9.52 },
+  "modul": "Jinko Tiger Neo 54HL4R-B 440 W",
+  "wr": "Fronius GEN24 8 kW",
+  "verluste": 14,
+  "wrMax": 8.0,
+  "tk": -0.29,
+  "archivAb": "2026-01-01",
+  "flaechen": [
+    { "name": "Dach 1", "string": "A", "module": 12, "wp": 440, "neigung": 35, "richtung": 210 },
+    { "name": "Dach 2", "string": "B", "module": 9, "wp": 440, "neigung": 35, "richtung": 300 }
+  ]
+}

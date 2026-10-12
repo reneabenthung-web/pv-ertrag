@@ -47,19 +47,45 @@ button{font:inherit;border:1px solid var(--line);background:var(--input);color:v
 .err{color:#dc2626}
 footer{color:var(--muted);font-size:.78rem;margin-top:18px}
 @media (max-width:520px){ .big{font-size:1.7rem} .chartbox{height:260px} }
+.tabelle{width:100%;border-collapse:collapse;font-size:.85rem}
+.tabelle th,.tabelle td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+.tabelle th:first-child,.tabelle td:first-child{text-align:left}
+.tabelle th{color:var(--muted);font-weight:500}
+.scroll{overflow-x:auto}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button.aktiv{background:var(--accent);border-color:var(--accent);color:#1c1300;font-weight:600}
 </style>
 </head>
 <body>
 <main>
   <h1>☀️ PV-Ertragsprognose</h1>
-  <p class="sub">Erwarteter Ertrag für heute und die nächsten zwei Tage – aus Ausrichtung, Neigung und Wetterprognose für Gamprin.</p>
+  <p class="sub">Erwarteter Ertrag für heute und die nächsten zwei Tage, dazu das Archiv seit Januar – berechnet aus Ausrichtung, Neigung und Wetter für Gamprin. Wird stündlich aktualisiert.</p>
 
   <div class="row" style="margin-bottom:14px;align-items:center">
-    <button id="btnRechnen">↻ Aktualisieren</button>
+    <button id="btnRechnen">↻ Neu laden</button>
     <span id="status" class="muted"></span>
   </div>
 
   <div id="ergebnis"></div>
+
+  <section class="block gesamt" id="archiv" hidden>
+    <div class="card">
+      <h2>Archiv</h2>
+      <p class="muted" style="margin:-6px 0 10px;font-size:.88rem">Täglich aus dem eingetretenen Wetter nachgerechnet – keine Messwerte des Wechselrichters.</p>
+      <div class="summe" id="archivSumme"></div>
+    </div>
+    <div class="card">
+      <div class="tabs">
+        <button data-ansicht="tage" class="aktiv">Letzte 60 Tage</button>
+        <button data-ansicht="monate">Monate</button>
+      </div>
+      <div class="chartbox"><canvas id="archivChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2 style="font-size:.95rem">Letzte 14 Tage</h2>
+      <div class="scroll"><table class="tabelle" id="archivTabelle"></table></div>
+    </div>
+  </section>
 
   <footer>
     Wetter- und Einstrahlungsdaten: <a href="https://open-meteo.com/" style="color:inherit">Open-Meteo.com</a> (CC BY 4.0).
@@ -68,32 +94,16 @@ footer{color:var(--muted);font-size:.78rem;margin-top:18px}
 </main>
 
 <script>
-// Fest eingebaute Anlage. Richtung als Kompass-Azimut: 0° = Nord, 90° = Ost, 180° = Süd, 270° = West.
-const S = {
-  ort: { name: 'Gamprin', lat: 47.23, lon: 9.52 },
-  flaechen: [
-    { name: 'Dach 1', string: 'A', module: 12, wp: 440, neigung: 35, richtung: 210 },
-    { name: 'Dach 2', string: 'B', module: 9,  wp: 440, neigung: 35, richtung: 300 }
-  ],
-  modul: 'Jinko Tiger Neo 54HL4R-B 440 W',
-  wr: 'Fronius GEN24 8 kW',
-  // Verluste: Wechselrichter, Kabel (6 mm²), Mismatch, Verschmutzung, Alterung
-  verluste: 14,
-  wrMax: 8.0,   // AC-Nennleistung Wechselrichter in kW
-  tk: -0.29     // Temperaturkoeffizient Pmax Tiger Neo (N-Type) in %/K
-};
-S.flaechen.forEach(f => {
-  f.kwp = f.module * f.wp / 1000;
-  f.azimut = f.richtung - 180;   // Open-Meteo erwartet 0 = Süd, -90 = Ost, 90 = West
-});
+// Die Daten rechnet aktualisieren.ps1 stündlich (GitHub Action): daten.json = Prognose, archiv.json = Tageserträge.
 const $ = id => document.getElementById(id);
 const fmt = (n, d = 1) => n.toLocaleString('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d });
+const css = getComputedStyle(document.documentElement), c = v => css.getPropertyValue(v).trim();
+const FARBEN = [c('--accent'), '#f97316', '#a3e635', '#fb7185'];
 
 function richtungName(grad) {
   const n = ['N','NNO','NO','ONO','O','OSO','SO','SSO','S','SSW','SW','WSW','W','WNW','NW','NNW'];
   return n[Math.round(grad / 22.5) % 16];
 }
-
 const WETTER = {
   0:['☀️','klar'],1:['🌤️','überwiegend klar'],2:['⛅','teils bewölkt'],3:['☁️','bedeckt'],
   45:['🌫️','Nebel'],48:['🌫️','Raureifnebel'],51:['🌦️','leichter Niesel'],53:['🌦️','Niesel'],55:['🌧️','starker Niesel'],
@@ -103,22 +113,12 @@ const WETTER = {
   85:['🌨️','Schneeschauer'],86:['🌨️','Schneeschauer'],95:['⛈️','Gewitter'],96:['⛈️','Gewitter mit Hagel'],99:['⛈️','Gewitter mit Hagel']
 };
 
-// ---------- Berechnung ----------
-async function holen(f, mitWetter) {
-  const p = new URLSearchParams({
-    latitude: S.ort.lat, longitude: S.ort.lon, tilt: f.neigung, azimuth: f.azimut,
-    hourly: 'global_tilted_irradiance,temperature_2m,cloud_cover' + (mitWetter ? ',sunshine_duration' : ''),
-    timezone: 'auto', forecast_days: 3
-  });
-  if (mitWetter) p.set('daily', 'weather_code,sunshine_duration,temperature_2m_max,temperature_2m_min,precipitation_sum');
-  const r = await fetch('https://api.open-meteo.com/v1/forecast?' + p);
-  if (!r.ok) throw new Error('Open-Meteo: ' + r.status);
-  return r.json();
-}
-
 const charts = [];
 const NAMEN = ['Heute', 'Morgen', 'Übermorgen'];
 let yMax;   // gemeinsame y-Skala der Einzeldächer, damit sie vergleichbar sind
+
+const datumKurz = d => new Date(d + 'T12:00').toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'numeric' });
+const summe = arr => arr.reduce((a, b) => a + b, 0);
 
 // Tageswerte aus einer Stundenreihe (Stempel 00:00 zählt zur Stunde davor, also zum Vortag)
 function tageswerte(zeiten, tage, reihe) {
@@ -135,9 +135,9 @@ function tageswerte(zeiten, tage, reihe) {
 // Ein Abschnitt: Kopf mit Summe, Tageskarten, Stundendiagramm
 function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
   const zeiten = wetter.hourly.time, wolken = wetter.hourly.cloud_cover, tg = wetter.daily;
-  const summe = zeiten.map((_, h) => serien.reduce((a, s) => a + s.daten[h], 0));
-  const { kwh, peak } = tageswerte(zeiten, tg.time, summe);
-  const sum = kwh.reduce((a, b) => a + b, 0);
+  const total = zeiten.map((_, h) => serien.reduce((a, s) => a + s.daten[h], 0));
+  const { kwh, peak } = tageswerte(zeiten, tg.time, total);
+  const sum = summe(kwh);
 
   const sec = document.createElement('section');
   sec.className = 'block' + (gesamt ? ' gesamt' : '');
@@ -153,9 +153,8 @@ function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
     </div>
     <div class="tage">${tg.time.map((d, i) => {
       const [ic, txt] = WETTER[tg.weather_code[i]] || ['❔', '–'];
-      const dat = new Date(d + 'T12:00').toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'numeric' });
       return `<div class="tag">
-        <div class="kopf"><div><strong>${NAMEN[i] || ''}</strong><br><span class="muted">${dat}</span></div><div class="wetter" title="${txt}">${ic}</div></div>
+        <div class="kopf"><div><strong>${NAMEN[i] || ''}</strong><br><span class="muted">${datumKurz(d)}</span></div><div class="wetter" title="${txt}">${ic}</div></div>
         <div class="kwh">${fmt(kwh[i])} kWh</div>
         ${gesamt ? `<div class="muted">${txt}</div>` : ''}
         <dl>
@@ -172,11 +171,10 @@ function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
     </div>`;
   $('ergebnis').appendChild(sec);
 
-  const css = getComputedStyle(document.documentElement), c = v => css.getPropertyValue(v).trim();
   const labels = zeiten.map(t => (t.slice(11, 13) === '00'
     ? new Date(t).toLocaleDateString('de-CH', { weekday: 'short' }) + ' ' : '') + t.slice(11, 16));
   const ds = serien.map(s => ({
-    type: 'bar', label: s.name + ' (kW)', data: s.daten.map(v => +v.toFixed(3)),
+    type: 'bar', label: s.name + ' (kW)', data: s.daten,
     backgroundColor: s.farbe, stack: 'pv', yAxisID: 'y', borderRadius: 2
   }));
   ds.push({
@@ -191,7 +189,7 @@ function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
         legend: { labels: { color: c('--text'), boxWidth: 12 } },
         tooltip: { callbacks: {
           title: it => new Date(zeiten[it[0].dataIndex]).toLocaleString('de-CH', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }),
-          footer: it => serien.length > 1 ? 'Gesamt: ' + fmt(summe[it[0].dataIndex], 2) + ' kW' : ''
+          footer: it => serien.length > 1 ? 'Gesamt: ' + fmt(total[it[0].dataIndex], 2) + ' kW' : ''
         } }
       },
       scales: {
@@ -203,53 +201,121 @@ function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
   }));
 }
 
-async function rechnen() {
-  const fl = S.flaechen;
-  $('status').textContent = 'Lade Wetterprognose …';
-  try {
-    const daten = await Promise.all(fl.map((f, i) => holen(f, i === 0)));
-    const n = daten[0].hourly.time.length;
-    const verl = 1 - S.verluste / 100, tk = S.tk / 100;
+// ---------- Archiv ----------
+let ARCHIV, ANLAGE, archivChart, ansicht = 'tage';
 
-    // Leistung pro Fläche und Stunde (kW). Einstrahlung = Mittel der vorangehenden Stunde.
-    const proFl = daten.map((d, i) => d.hourly.global_tilted_irradiance.map((g, h) => {
-      g = g || 0; if (g <= 0) return 0;
-      const tZelle = d.hourly.temperature_2m[h] + g / 800 * 25;   // NOCT ≈ 45 °C
-      return Math.max(0, fl[i].kwp * g / 1000 * (1 + tk * (tZelle - 25)) * verl);
-    }));
-    if (S.wrMax > 0) for (let h = 0; h < n; h++) {
-      const s = proFl.reduce((a, arr) => a + arr[h], 0);
-      if (s > S.wrMax) proFl.forEach(arr => arr[h] *= S.wrMax / s);
+function zeigeArchiv() {
+  const arch = ARCHIV, fl = ANLAGE.flaechen;
+  const tage = Object.keys(arch).filter(k => arch[k].d).sort();
+  if (!tage.length) return;
+  const tagSum = k => summe(arch[k].d);
+  const letzter = tage[tage.length - 1], jahr = letzter.slice(0, 4), monat = letzter.slice(0, 7);
+  const jahrT = tage.filter(k => k.startsWith(jahr));
+  const proDach = fl.map((_, i) => summe(jahrT.map(k => arch[k].d[i])));
+  const jahrSum = summe(proDach), kwp = summe(fl.map(f => f.kwp));
+  const monSum = summe(tage.filter(k => k.startsWith(monat)).map(tagSum));
+  const best = jahrT.reduce((b, k) => tagSum(k) > tagSum(b) ? k : b);
+  const monName = new Date(monat + '-15').toLocaleDateString('de-CH', { month: 'long' });
+
+  $('archivSumme').innerHTML = `
+    <div><div class="muted">${jahr} bis ${datumKurz(letzter)}</div><div class="big">${fmt(jahrSum, 0)} kWh</div></div>
+    ${fl.map((f, i) => `<div><div class="muted">${f.name}</div><div class="mid">${fmt(proDach[i], 0)} kWh</div></div>`).join('')}
+    <div><div class="muted">pro kWp</div><div class="mid">${fmt(jahrSum / kwp, 0)} kWh</div></div>
+    <div><div class="muted">${monName} bisher</div><div class="mid">${fmt(monSum, 0)} kWh</div></div>
+    <div><div class="muted">Bester Tag (${datumKurz(best)})</div><div class="mid">${fmt(tagSum(best))} kWh</div></div>`;
+
+  // Tabelle der letzten 14 Tage, neueste zuerst
+  const zeilen = tage.slice(-14).reverse().map(k => {
+    const e = arch[k], [ic, txt] = WETTER[e.wc] || ['❔', '–'], s = tagSum(k);
+    const abw = e.prog != null && s > 0 ? Math.round((e.prog - s) / s * 100) : null;
+    return `<tr><td>${datumKurz(k)}</td><td title="${txt}">${ic}</td><td>${fmt(e.sonne)} h</td>
+      ${e.d.map(v => `<td>${fmt(v)}</td>`).join('')}<td><strong>${fmt(s)}</strong></td>
+      <td>${e.prog != null ? fmt(e.prog) : '–'}</td><td class="muted">${abw != null ? (abw > 0 ? '+' : '') + abw + ' %' : ''}</td></tr>`;
+  }).join('');
+  $('archivTabelle').innerHTML = `<tr><th>Tag</th><th></th><th>Sonne</th>${fl.map(f => `<th>${f.name}</th>`).join('')}
+    <th>Gesamt kWh</th><th>Prognose</th><th>Abw.</th></tr>` + zeilen;
+
+  // Diagramm: letzte 60 Tage oder Monatssummen
+  let labels, reihen, prog = null;
+  if (ansicht === 'tage') {
+    const t = tage.slice(-60);
+    labels = t.map(datumKurz);
+    reihen = fl.map((_, i) => t.map(k => arch[k].d[i]));
+    prog = t.map(k => arch[k].prog ?? null);
+  } else {
+    const monate = [...new Set(tage.map(k => k.slice(0, 7)))];
+    labels = monate.map(m => new Date(m + '-15').toLocaleDateString('de-CH', { month: 'short', year: '2-digit' }));
+    reihen = fl.map((_, i) => monate.map(m => +summe(tage.filter(k => k.startsWith(m)).map(k => arch[k].d[i])).toFixed(1)));
+  }
+  const ds = fl.map((f, i) => ({ type: 'bar', label: f.name + ' (kWh)', data: reihen[i], backgroundColor: FARBEN[i % FARBEN.length], stack: 'pv', borderRadius: 2 }));
+  if (prog && prog.some(v => v != null)) ds.push({
+    type: 'line', label: 'Prognose (kWh)', data: prog, borderColor: c('--accent2'), backgroundColor: c('--accent2'),
+    borderWidth: 0, pointRadius: 3, showLine: false
+  });
+  if (archivChart) archivChart.destroy();
+  archivChart = new Chart($('archivChart'), {
+    data: { labels, datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: c('--text'), boxWidth: 12 } },
+        tooltip: { callbacks: { footer: it => 'Gesamt: ' + fmt(summe(reihen.map(r => r[it[0].dataIndex]))) + ' kWh' } }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: c('--muted'), maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { color: c('--line') } },
+        y: { stacked: true, beginAtZero: true, title: { display: true, text: 'kWh', color: c('--muted') }, ticks: { color: c('--muted') }, grid: { color: c('--line') } }
+      }
     }
-    yMax = Math.ceil(Math.max(...proFl.flat()) + 0.3);
+  });
+  $('archiv').hidden = false;
+}
 
-    const css = getComputedStyle(document.documentElement);
-    const farben = [css.getPropertyValue('--accent').trim(), '#f97316', '#a3e635', '#fb7185'];
-    const wetter = daten[0];
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('aktiv', x === b));
+  ansicht = b.dataset.ansicht; zeigeArchiv();
+});
+
+// ---------- Laden ----------
+async function holeJson(datei) {
+  const r = await fetch(datei + '?t=' + Date.now());
+  if (!r.ok) throw new Error(datei + ': ' + r.status);
+  return r.json();
+}
+
+async function laden() {
+  $('status').textContent = 'Lade …';
+  try {
+    const [D, arch] = await Promise.all([holeJson('daten.json'), holeJson('archiv.json')]);
+    const A = D.anlage, fl = A.flaechen;
+    fl.forEach(f => f.kwp = f.module * f.wp / 1000);
+    yMax = Math.ceil(Math.max(...D.kw.flat()) + 0.3);
 
     charts.splice(0).forEach(ch => ch.destroy());
     $('ergebnis').innerHTML = '';
+    const wetter = { hourly: { time: D.zeiten, cloud_cover: D.wolken }, daily: D.tage };
     fl.forEach((f, i) => abschnitt({
       titel: f.name,
-      info: `String ${f.string} · ${f.module} × ${S.modul} · Richtung ${f.richtung}° (${richtungName(f.richtung)}) · Neigung ${f.neigung}°`,
-      kwp: f.kwp, wetter, serien: [{ name: f.name, daten: proFl[i], farbe: farben[i % farben.length] }]
+      info: `String ${f.string} · ${f.module} × ${A.modul} · Richtung ${f.richtung}° (${richtungName(f.richtung)}) · Neigung ${f.neigung}°`,
+      kwp: f.kwp, wetter, serien: [{ name: f.name, daten: D.kw[i], farbe: FARBEN[i % FARBEN.length] }]
     }));
     abschnitt({
       titel: 'Gesamtanlage', gesamt: true,
-      info: 'Gamprin · ' + fl.map(f => `${f.name} ${fmt(f.kwp, 2)} kWp`).join(' + ')
-        + ` · Wechselrichter ${S.wr} (max. ${fmt(S.wrMax)} kW AC)`,
-      kwp: fl.reduce((a, f) => a + f.kwp, 0), wetter,
-      serien: fl.map((f, i) => ({ name: f.name, daten: proFl[i], farbe: farben[i % farben.length] }))
+      info: `${A.ort.name} · ` + fl.map(f => `${f.name} ${fmt(f.kwp, 2)} kWp`).join(' + ')
+        + ` · Wechselrichter ${A.wr} (max. ${fmt(A.wrMax)} kW AC)`,
+      kwp: summe(fl.map(f => f.kwp)), wetter,
+      serien: fl.map((f, i) => ({ name: f.name, daten: D.kw[i], farbe: FARBEN[i % FARBEN.length] }))
     });
 
-    $('status').textContent = 'Stand: ' + new Date().toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
+    ARCHIV = arch; ANLAGE = A; zeigeArchiv();
+    $('status').textContent = 'Berechnet: ' + new Date(D.stand).toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
   } catch (e) {
     $('status').innerHTML = '<span class="err">Fehler beim Laden: ' + e.message + '</span>';
   }
 }
-$('btnRechnen').onclick = rechnen;
+$('btnRechnen').onclick = laden;
+setInterval(laden, 15 * 60e3);   // offene Seite holt neue Daten selbst
 
-rechnen();
+laden();
 </script>
 </body>
 </html>
