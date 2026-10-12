@@ -6,13 +6,11 @@
   "wrMax": 8.0,
   "tk": -0.29,
   "archivAb": "2026-01-01",
-  "korrektur": {
-    "klar": 1.071,
-    "bewoelkt": 0.977,
-    "quelle": "Abgleich mit Loxone-Messwerten 01.01.–11.10.2026 (268 Tage ohne Schnee)"
-  },
+  "korrekturQuelle": "Abgleich je Dach mit Loxone-Messwerten 01.01.–11.10.2026 (ohne Schneetage und 19.–21.08.)",
   "flaechen": [
-    { "name": "Dach 1", "string": "A", "module": 12, "wp": 440, "neigung": 35, "richtung": 210 },
-    { "name": "Dach 2", "string": "B", "module": 9, "wp": 440, "neigung": 35, "richtung": 300 }
+    { "name": "Dach 1", "string": "A", "module": 12, "wp": 440, "neigung": 35, "richtung": 210,
+      "korrektur": { "klar": 1.112, "bewoelkt": 1.006 } },
+    { "name": "Dach 2", "string": "B", "module": 9, "wp": 440, "neigung": 35, "richtung": 300,
+      "korrektur": { "klar": 0.993, "bewoelkt": 0.933 } }
   ]
 }

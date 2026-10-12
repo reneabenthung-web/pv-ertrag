@@ -5,8 +5,8 @@
 # Anlage: anlage.json. Richtung als Kompass-Azimut (0° = Nord, 180° = Süd).
 # Rechnung: kWp × Einstrahlung auf die geneigte Fläche / 1000, korrigiert um die
 # Modultemperatur (NOCT ≈ 45 °C) und die Systemverluste, begrenzt auf die AC-Leistung
-# des Wechselrichters, mal einem Korrekturfaktor je nach Bewölkung (anlage.json, aus dem
-# Abgleich mit den Loxone-Messwerten). Die Archivwerte sind aus dem eingetretenen Wetter berechnet,
+# des Wechselrichters, mal einem Korrekturfaktor je Dach und Bewölkung (anlage.json, aus dem
+# Abgleich mit den Loxone-Messwerten der einzelnen Strings). Die Archivwerte sind aus dem eingetretenen Wetter berechnet,
 # keine Messwerte.
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,6 @@ $inv = [Globalization.CultureInfo]::InvariantCulture
 $utf8 = New-Object Text.UTF8Encoding $false
 $A = [IO.File]::ReadAllText("$PSScriptRoot/anlage.json", $utf8) | ConvertFrom-Json
 $VORTAGE = 7   # so viele vergangene Tage werden bei jedem Lauf neu gerechnet
-$KORR = if ($A.korrektur) { $A.korrektur } else { [pscustomobject]@{ klar = 1; bewoelkt = 1 } }
 
 function Hole($basis, $f, $extra) {
   $az = $f.richtung - 180   # Open-Meteo: 0 = Süd, -90 = Ost, 90 = West
@@ -36,6 +35,7 @@ function Leistung($daten) {
   for ($i = 0; $i -lt $A.flaechen.Count; $i++) {
     $f = $A.flaechen[$i]; $h = $daten[$i].hourly
     $kwp = $f.module * $f.wp / 1000
+    $korr = if ($f.korrektur) { $f.korrektur } else { [pscustomobject]@{ klar = 1; bewoelkt = 1 } }
     $reihe = New-Object double[] $n
     for ($t = 0; $t -lt $n; $t++) {
       $g = [double]$h.global_tilted_irradiance[$t]
@@ -43,7 +43,7 @@ function Leistung($daten) {
       $tZelle = [double]$h.temperature_2m[$t] + $g / 800 * 25
       # Korrektur aus dem Abgleich mit den Messwerten, gewichtet nach der Bewölkung dieser Stunde
       $cc = [double]$h.cloud_cover[$t] / 100
-      $faktor = $KORR.klar * (1 - $cc) + $KORR.bewoelkt * $cc
+      $faktor = $korr.klar * (1 - $cc) + $korr.bewoelkt * $cc
       $reihe[$t] = [math]::Max(0.0, $kwp * $g / 1000 * (1 + $A.tk / 100 * ($tZelle - 25)) * (1 - $A.verluste / 100) * $faktor)
     }
     $kw += , $reihe
