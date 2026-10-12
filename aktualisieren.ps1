@@ -5,7 +5,8 @@
 # Anlage: anlage.json. Richtung als Kompass-Azimut (0° = Nord, 180° = Süd).
 # Rechnung: kWp × Einstrahlung auf die geneigte Fläche / 1000, korrigiert um die
 # Modultemperatur (NOCT ≈ 45 °C) und die Systemverluste, begrenzt auf die AC-Leistung
-# des Wechselrichters. Die Archivwerte sind aus dem eingetretenen Wetter berechnet,
+# des Wechselrichters, mal einem Korrekturfaktor je nach Bewölkung (anlage.json, aus dem
+# Abgleich mit den Loxone-Messwerten). Die Archivwerte sind aus dem eingetretenen Wetter berechnet,
 # keine Messwerte.
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,7 @@ $inv = [Globalization.CultureInfo]::InvariantCulture
 $utf8 = New-Object Text.UTF8Encoding $false
 $A = [IO.File]::ReadAllText("$PSScriptRoot/anlage.json", $utf8) | ConvertFrom-Json
 $VORTAGE = 7   # so viele vergangene Tage werden bei jedem Lauf neu gerechnet
+$KORR = if ($A.korrektur) { $A.korrektur } else { [pscustomobject]@{ klar = 1; bewoelkt = 1 } }
 
 function Hole($basis, $f, $extra) {
   $az = $f.richtung - 180   # Open-Meteo: 0 = Süd, -90 = Ost, 90 = West
@@ -39,7 +41,10 @@ function Leistung($daten) {
       $g = [double]$h.global_tilted_irradiance[$t]
       if ($g -le 0) { continue }
       $tZelle = [double]$h.temperature_2m[$t] + $g / 800 * 25
-      $reihe[$t] = [math]::Max(0.0, $kwp * $g / 1000 * (1 + $A.tk / 100 * ($tZelle - 25)) * (1 - $A.verluste / 100))
+      # Korrektur aus dem Abgleich mit den Messwerten, gewichtet nach der Bewölkung dieser Stunde
+      $cc = [double]$h.cloud_cover[$t] / 100
+      $faktor = $KORR.klar * (1 - $cc) + $KORR.bewoelkt * $cc
+      $reihe[$t] = [math]::Max(0.0, $kwp * $g / 1000 * (1 + $A.tk / 100 * ($tZelle - 25)) * (1 - $A.verluste / 100) * $faktor)
     }
     $kw += , $reihe
   }
@@ -68,10 +73,10 @@ function Eintrag($summen, $daily, $j, $alt) {
   $e = [ordered]@{
     d     = @($summen[$tag] | ForEach-Object { [math]::Round($_, 2) })
     sonne = [math]::Round([double]$daily.sunshine_duration[$j] / 3600, 1)
-    wc    = $daily.weather_code[$j]
-    tmin  = $daily.temperature_2m_min[$j]
-    tmax  = $daily.temperature_2m_max[$j]
-    regen = $daily.precipitation_sum[$j]
+    wc    = [int]$daily.weather_code[$j]
+    tmin  = [math]::Round([double]$daily.temperature_2m_min[$j], 1)
+    tmax  = [math]::Round([double]$daily.temperature_2m_max[$j], 1)
+    regen = [math]::Round([double]$daily.precipitation_sum[$j], 1)
   }
   if ($alt -and $alt.Contains('prog')) { $e.prog = $alt.prog }
   $e
