@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PV-Ertragsprognose</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --text:#1c2230; --muted:#667085; --line:#e3e6ec;
+  --accent:#f59e0b; --accent2:#2563eb; --good:#16a34a; --input:#f9fafb;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11141a; --card:#1a1f28; --text:#e8ebf0; --muted:#9aa3b2; --line:#2a313d;
+    --accent:#fbbf24; --accent2:#60a5fa; --good:#4ade80; --input:#141820;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11141a; --card:#1a1f28; --text:#e8ebf0; --muted:#9aa3b2; --line:#2a313d;
+  --accent:#fbbf24; --accent2:#60a5fa; --good:#4ade80; --input:#141820;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:1.45rem;margin:4px 0 2px}
+h2{font-size:1.05rem;margin:0 0 10px}
+.sub{color:var(--muted);margin:0 0 16px;font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+button{font:inherit;border:1px solid var(--line);background:var(--input);color:var(--text);border-radius:8px;padding:7px 12px;cursor:pointer}
+.mid{font-size:1.3rem;font-weight:600}
+.block{margin-bottom:28px}
+.block.gesamt{border-top:2px solid var(--accent);padding-top:18px}
+.block.gesamt h2{font-size:1.25rem}
+.summe{display:flex;gap:24px;flex-wrap:wrap;align-items:baseline}
+.big{font-size:2rem;font-weight:700;color:var(--accent)}
+.muted{color:var(--muted)}
+.tage{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.tag{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.tag .kopf{display:flex;justify-content:space-between;align-items:center}
+.tag .wetter{font-size:2rem}
+.tag .kwh{font-size:1.6rem;font-weight:700;margin:6px 0 2px}
+.tag dl{display:grid;grid-template-columns:auto auto;gap:2px 10px;margin:8px 0 0;font-size:.85rem}
+.tag dt{color:var(--muted)} .tag dd{margin:0;text-align:right}
+.chartbox{position:relative;height:320px}
+.err{color:#dc2626}
+footer{color:var(--muted);font-size:.78rem;margin-top:18px}
+@media (max-width:520px){ .big{font-size:1.7rem} .chartbox{height:260px} }
+</style>
+</head>
+<body>
+<main>
+  <h1>☀️ PV-Ertragsprognose</h1>
+  <p class="sub">Erwarteter Ertrag für heute und die nächsten zwei Tage – aus Ausrichtung, Neigung und Wetterprognose für Gamprin.</p>
+
+  <div class="row" style="margin-bottom:14px;align-items:center">
+    <button id="btnRechnen">↻ Aktualisieren</button>
+    <span id="status" class="muted"></span>
+  </div>
+
+  <div id="ergebnis"></div>
+
+  <footer>
+    Wetter- und Einstrahlungsdaten: <a href="https://open-meteo.com/" style="color:inherit">Open-Meteo.com</a> (CC BY 4.0).
+    Rechnung: Einstrahlung auf die geneigte Fläche × kWp, korrigiert um Modultemperatur (Tiger Neo −0,29 %/K) und 14 % Systemverluste, begrenzt auf 8 kW AC des Wechselrichters. Schätzung – Verschattung, Schnee und Verschmutzung sind nicht berücksichtigt.
+  </footer>
+</main>
+
+<script>
+// Fest eingebaute Anlage. Richtung als Kompass-Azimut: 0° = Nord, 90° = Ost, 180° = Süd, 270° = West.
+const S = {
+  ort: { name: 'Gamprin', lat: 47.23, lon: 9.52 },
+  flaechen: [
+    { name: 'Dach 1', string: 'A', module: 12, wp: 440, neigung: 35, richtung: 210 },
+    { name: 'Dach 2', string: 'B', module: 9,  wp: 440, neigung: 35, richtung: 300 }
+  ],
+  modul: 'Jinko Tiger Neo 54HL4R-B 440 W',
+  wr: 'Fronius GEN24 8 kW',
+  // Verluste: Wechselrichter, Kabel (6 mm²), Mismatch, Verschmutzung, Alterung
+  verluste: 14,
+  wrMax: 8.0,   // AC-Nennleistung Wechselrichter in kW
+  tk: -0.29     // Temperaturkoeffizient Pmax Tiger Neo (N-Type) in %/K
+};
+S.flaechen.forEach(f => {
+  f.kwp = f.module * f.wp / 1000;
+  f.azimut = f.richtung - 180;   // Open-Meteo erwartet 0 = Süd, -90 = Ost, 90 = West
+});
+const $ = id => document.getElementById(id);
+const fmt = (n, d = 1) => n.toLocaleString('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+function richtungName(grad) {
+  const n = ['N','NNO','NO','ONO','O','OSO','SO','SSO','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return n[Math.round(grad / 22.5) % 16];
+}
+
+const WETTER = {
+  0:['☀️','klar'],1:['🌤️','überwiegend klar'],2:['⛅','teils bewölkt'],3:['☁️','bedeckt'],
+  45:['🌫️','Nebel'],48:['🌫️','Raureifnebel'],51:['🌦️','leichter Niesel'],53:['🌦️','Niesel'],55:['🌧️','starker Niesel'],
+  56:['🌧️','gefrierender Niesel'],57:['🌧️','gefrierender Niesel'],61:['🌦️','leichter Regen'],63:['🌧️','Regen'],65:['🌧️','starker Regen'],
+  66:['🌧️','gefrierender Regen'],67:['🌧️','gefrierender Regen'],71:['🌨️','leichter Schnee'],73:['🌨️','Schnee'],75:['❄️','starker Schnee'],
+  77:['🌨️','Schneegriesel'],80:['🌦️','Regenschauer'],81:['🌧️','Regenschauer'],82:['⛈️','heftige Schauer'],
+  85:['🌨️','Schneeschauer'],86:['🌨️','Schneeschauer'],95:['⛈️','Gewitter'],96:['⛈️','Gewitter mit Hagel'],99:['⛈️','Gewitter mit Hagel']
+};
+
+// ---------- Berechnung ----------
+async function holen(f, mitWetter) {
+  const p = new URLSearchParams({
+    latitude: S.ort.lat, longitude: S.ort.lon, tilt: f.neigung, azimuth: f.azimut,
+    hourly: 'global_tilted_irradiance,temperature_2m,cloud_cover' + (mitWetter ? ',sunshine_duration' : ''),
+    timezone: 'auto', forecast_days: 3
+  });
+  if (mitWetter) p.set('daily', 'weather_code,sunshine_duration,temperature_2m_max,temperature_2m_min,precipitation_sum');
+  const r = await fetch('https://api.open-meteo.com/v1/forecast?' + p);
+  if (!r.ok) throw new Error('Open-Meteo: ' + r.status);
+  return r.json();
+}
+
+const charts = [];
+const NAMEN = ['Heute', 'Morgen', 'Übermorgen'];
+let yMax;   // gemeinsame y-Skala der Einzeldächer, damit sie vergleichbar sind
+
+// Tageswerte aus einer Stundenreihe (Stempel 00:00 zählt zur Stunde davor, also zum Vortag)
+function tageswerte(zeiten, tage, reihe) {
+  const kwh = tage.map(() => 0), peak = tage.map(() => [0, '']);
+  zeiten.forEach((t, h) => {
+    const start = new Date(new Date(t + 'Z').getTime() - 3600e3).toISOString().slice(0, 10);
+    const idx = tage.indexOf(start); if (idx < 0) return;
+    kwh[idx] += reihe[h];
+    if (reihe[h] > peak[idx][0]) peak[idx] = [reihe[h], t.slice(11, 16)];
+  });
+  return { kwh, peak };
+}
+
+// Ein Abschnitt: Kopf mit Summe, Tageskarten, Stundendiagramm
+function abschnitt({ titel, info, kwp, serien, wetter, gesamt }) {
+  const zeiten = wetter.hourly.time, wolken = wetter.hourly.cloud_cover, tg = wetter.daily;
+  const summe = zeiten.map((_, h) => serien.reduce((a, s) => a + s.daten[h], 0));
+  const { kwh, peak } = tageswerte(zeiten, tg.time, summe);
+  const sum = kwh.reduce((a, b) => a + b, 0);
+
+  const sec = document.createElement('section');
+  sec.className = 'block' + (gesamt ? ' gesamt' : '');
+  sec.innerHTML = `
+    <div class="card">
+      <h2>${titel}</h2>
+      <p class="muted" style="margin:-6px 0 10px;font-size:.88rem">${info}</p>
+      <div class="summe">
+        <div><div class="muted">Summe 3 Tage</div><div class="big">${fmt(sum)} kWh</div></div>
+        <div><div class="muted">pro kWp</div><div class="mid">${fmt(sum / kwp, 2)} kWh/kWp</div></div>
+        <div><div class="muted">Leistung</div><div class="mid">${fmt(kwp, 2)} kWp</div></div>
+      </div>
+    </div>
+    <div class="tage">${tg.time.map((d, i) => {
+      const [ic, txt] = WETTER[tg.weather_code[i]] || ['❔', '–'];
+      const dat = new Date(d + 'T12:00').toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'numeric' });
+      return `<div class="tag">
+        <div class="kopf"><div><strong>${NAMEN[i] || ''}</strong><br><span class="muted">${dat}</span></div><div class="wetter" title="${txt}">${ic}</div></div>
+        <div class="kwh">${fmt(kwh[i])} kWh</div>
+        ${gesamt ? `<div class="muted">${txt}</div>` : ''}
+        <dl>
+          <dt>Spitzenleistung</dt><dd>${fmt(peak[i][0], 2)} kW${peak[i][1] ? ' (' + peak[i][1] + ')' : ''}</dd>
+          <dt>pro kWp</dt><dd>${fmt(kwh[i] / kwp, 2)} kWh</dd>
+          ${gesamt ? `<dt>Sonnenstunden</dt><dd>${fmt(tg.sunshine_duration[i] / 3600)} h</dd>
+          <dt>Temperatur</dt><dd>${fmt(tg.temperature_2m_min[i], 0)} / ${fmt(tg.temperature_2m_max[i], 0)} °C</dd>
+          <dt>Niederschlag</dt><dd>${fmt(tg.precipitation_sum[i])} mm</dd>` : ''}
+        </dl></div>`;
+    }).join('')}</div>
+    <div class="card" style="margin-top:12px">
+      <h2 style="font-size:.95rem">Stündlicher Verlauf</h2>
+      <div class="chartbox"><canvas></canvas></div>
+    </div>`;
+  $('ergebnis').appendChild(sec);
+
+  const css = getComputedStyle(document.documentElement), c = v => css.getPropertyValue(v).trim();
+  const labels = zeiten.map(t => (t.slice(11, 13) === '00'
+    ? new Date(t).toLocaleDateString('de-CH', { weekday: 'short' }) + ' ' : '') + t.slice(11, 16));
+  const ds = serien.map(s => ({
+    type: 'bar', label: s.name + ' (kW)', data: s.daten.map(v => +v.toFixed(3)),
+    backgroundColor: s.farbe, stack: 'pv', yAxisID: 'y', borderRadius: 2
+  }));
+  ds.push({
+    type: 'line', label: 'Bewölkung (%)', data: wolken, borderColor: c('--accent2'),
+    borderWidth: 1.5, pointRadius: 0, tension: .3, yAxisID: 'y2', borderDash: [4, 3]
+  });
+  charts.push(new Chart(sec.querySelector('canvas'), {
+    data: { labels, datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: c('--text'), boxWidth: 12 } },
+        tooltip: { callbacks: {
+          title: it => new Date(zeiten[it[0].dataIndex]).toLocaleString('de-CH', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          footer: it => serien.length > 1 ? 'Gesamt: ' + fmt(summe[it[0].dataIndex], 2) + ' kW' : ''
+        } }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: c('--muted'), maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: c('--line') } },
+        y: { stacked: true, beginAtZero: true, max: gesamt ? undefined : yMax, title: { display: true, text: 'kW', color: c('--muted') }, ticks: { color: c('--muted') }, grid: { color: c('--line') } },
+        y2: { position: 'right', min: 0, max: 100, title: { display: true, text: 'Bewölkung %', color: c('--muted') }, ticks: { color: c('--muted') }, grid: { display: false } }
+      }
+    }
+  }));
+}
+
+async function rechnen() {
+  const fl = S.flaechen;
+  $('status').textContent = 'Lade Wetterprognose …';
+  try {
+    const daten = await Promise.all(fl.map((f, i) => holen(f, i === 0)));
+    const n = daten[0].hourly.time.length;
+    const verl = 1 - S.verluste / 100, tk = S.tk / 100;
+
+    // Leistung pro Fläche und Stunde (kW). Einstrahlung = Mittel der vorangehenden Stunde.
+    const proFl = daten.map((d, i) => d.hourly.global_tilted_irradiance.map((g, h) => {
+      g = g || 0; if (g <= 0) return 0;
+      const tZelle = d.hourly.temperature_2m[h] + g / 800 * 25;   // NOCT ≈ 45 °C
+      return Math.max(0, fl[i].kwp * g / 1000 * (1 + tk * (tZelle - 25)) * verl);
+    }));
+    if (S.wrMax > 0) for (let h = 0; h < n; h++) {
+      const s = proFl.reduce((a, arr) => a + arr[h], 0);
+      if (s > S.wrMax) proFl.forEach(arr => arr[h] *= S.wrMax / s);
+    }
+    yMax = Math.ceil(Math.max(...proFl.flat()) + 0.3);
+
+    const css = getComputedStyle(document.documentElement);
+    const farben = [css.getPropertyValue('--accent').trim(), '#f97316', '#a3e635', '#fb7185'];
+    const wetter = daten[0];
+
+    charts.splice(0).forEach(ch => ch.destroy());
+    $('ergebnis').innerHTML = '';
+    fl.forEach((f, i) => abschnitt({
+      titel: f.name,
+      info: `String ${f.string} · ${f.module} × ${S.modul} · Richtung ${f.richtung}° (${richtungName(f.richtung)}) · Neigung ${f.neigung}°`,
+      kwp: f.kwp, wetter, serien: [{ name: f.name, daten: proFl[i], farbe: farben[i % farben.length] }]
+    }));
+    abschnitt({
+      titel: 'Gesamtanlage', gesamt: true,
+      info: 'Gamprin · ' + fl.map(f => `${f.name} ${fmt(f.kwp, 2)} kWp`).join(' + ')
+        + ` · Wechselrichter ${S.wr} (max. ${fmt(S.wrMax)} kW AC)`,
+      kwp: fl.reduce((a, f) => a + f.kwp, 0), wetter,
+      serien: fl.map((f, i) => ({ name: f.name, daten: proFl[i], farbe: farben[i % farben.length] }))
+    });
+
+    $('status').textContent = 'Stand: ' + new Date().toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
+  } catch (e) {
+    $('status').innerHTML = '<span class="err">Fehler beim Laden: ' + e.message + '</span>';
+  }
+}
+$('btnRechnen').onclick = rechnen;
+
+rechnen();
+</script>
+</body>
+</html>
