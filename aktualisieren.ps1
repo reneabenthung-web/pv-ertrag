@@ -153,5 +153,77 @@ $prognose = [ordered]@{
 }
 [IO.File]::WriteAllText("$PSScriptRoot/daten.json", ($prognose | ConvertTo-Json -Depth 6 -Compress), $utf8)
 
+# ---------- Loxone-Schnittstelle (loxone.txt für den virtuellen HTTP-Eingang, loxone.json) ----------
+# Stunden nach Beginn gezählt: kw_h10 = mittlere Leistung von 10:00 bis 11:00 (bei Open-Meteo der Stempel 11:00).
+$zone = $null
+foreach ($id in 'Europe/Zurich', 'W. Europe Standard Time') { try { $zone = [TimeZoneInfo]::FindSystemTimeZoneById($id); break } catch { } }
+$lxJetzt = [TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $zone)
+$lxIndex = @{}; for ($t = 0; $t -lt $h0.time.Count; $t++) { $lxIndex[$h0.time[$t]] = $t }
+$lxNf = $A.flaechen.Count
+
+function LxLeistung([datetime]$beginn) {   # kW je Fläche für die Stunde ab $beginn, $null ausserhalb der Prognose
+  $stempel = $beginn.AddHours(1).ToString("yyyy-MM-dd'T'HH:mm", $inv)
+  if (-not $lxIndex.ContainsKey($stempel)) { return $null }
+  $ix = $lxIndex[$stempel]
+  return , @(for ($fi = 0; $fi -lt $lxNf; $fi++) { $kw[$fi][$ix] })
+}
+function LxZahl($wert, [int]$stellen = 2) {
+  if ($null -eq $wert) { 'nan' } else { ([double]$wert).ToString('0.' + ('0' * $stellen), $inv) }
+}
+function LxSumme($werte) { if ($null -eq $werte) { $null } else { ($werte | Measure-Object -Sum).Sum } }
+
+$lx = New-Object System.Collections.Generic.List[string]
+$lxJson = [ordered]@{ stand = $lxJetzt.ToString('yyyy-MM-ddTHH:mm', $inv); einheit = 'kW / kWh, berechnet'; flaechen = @($A.flaechen | ForEach-Object { $_.name }) }
+$lx.Add('stand=' + $lxJetzt.ToString('yyyy-MM-dd HH:mm', $inv))
+$lx.Add('stunde=' + $lxJetzt.Hour)
+
+# jetzt und Rest des Tages
+$lxStunde = $lxJetzt.Date.AddHours($lxJetzt.Hour)
+$jw = LxLeistung $lxStunde
+$lx.Add('jetzt_kw=' + (LxZahl (LxSumme $jw)))
+for ($fi = 0; $fi -lt $lxNf; $fi++) { $lx.Add("jetzt_kw_d$($fi + 1)=" + (LxZahl $(if ($jw) { $jw[$fi] } else { $null }))) }
+$wix = $lxIndex[$lxStunde.AddHours(1).ToString("yyyy-MM-dd'T'HH:mm", $inv)]
+$lx.Add('wolken_jetzt=' + $(if ($null -ne $wix) { [int]$h0.cloud_cover[$wix] } else { 'nan' }))
+$rest = 0.0
+for ($st = $lxJetzt.Hour; $st -lt 24; $st++) {
+  $w = LxLeistung ($lxJetzt.Date.AddHours($st)); if ($null -eq $w) { continue }
+  $anteil = if ($st -eq $lxJetzt.Hour) { 1 - $lxJetzt.Minute / 60 } else { 1 }
+  $rest += (LxSumme $w) * $anteil
+}
+$lx.Add('heute_rest_kwh=' + (LxZahl $rest))
+$lxJson.jetzt = [ordered]@{ kw = [math]::Round((LxSumme $jw), 3); kw_dach = @($jw | ForEach-Object { [math]::Round($_, 3) }); heute_rest_kwh = [math]::Round($rest, 2) }
+
+# gestern (aus dem Archiv, mit dem eingetretenen Wetter nachgerechnet)
+$gestern = $archiv[$lxJetzt.Date.AddDays(-1).ToString('yyyy-MM-dd', $inv)]
+$lx.Add('gestern_kwh=' + (LxZahl $(if ($gestern -and $gestern.Contains('d')) { LxSumme $gestern.d } else { $null })))
+
+# Tage
+$lxJson.tage = @()
+foreach ($tagInfo in @(@('heute', 0, 'h'), @('morgen', 1, 'm'), @('uebermorgen', 2, 'u'))) {
+  $name = $tagInfo[0]; $datum = $lxJetzt.Date.AddDays($tagInfo[1]); $schluessel = $datum.ToString('yyyy-MM-dd', $inv)
+  $proDach = $summen[$schluessel]
+  $lx.Add("${name}_kwh=" + (LxZahl (LxSumme $proDach)))
+  for ($fi = 0; $fi -lt $lxNf; $fi++) { $lx.Add("${name}_kwh_d$($fi + 1)=" + (LxZahl $(if ($proDach) { $proDach[$fi] } else { $null }))) }
+  $stunden = @(); $peak = -1.0; $peakStunde = $null
+  for ($st = 0; $st -lt 24; $st++) {
+    $w = LxLeistung ($datum.AddHours($st)); $s = LxSumme $w
+    $stunden += $(if ($null -eq $s) { $null } else { [math]::Round($s, 3) })
+    if ($null -ne $s -and $s -gt $peak) { $peak = $s; $peakStunde = $st }
+    if ($tagInfo[2] -ne 'u') { $lx.Add("kw_$($tagInfo[2])$($st.ToString('00'))=" + (LxZahl $s)) }
+  }
+  $lx.Add("${name}_peak_kw=" + (LxZahl $(if ($peak -ge 0) { $peak } else { $null })))
+  $lx.Add("${name}_peak_stunde=" + $(if ($null -ne $peakStunde) { $peakStunde } else { 'nan' }))
+  $di = [array]::IndexOf(@($d0.time), $schluessel)
+  $sonne = if ($di -ge 0) { [double]$d0.sunshine_duration[$di] / 3600 } else { $null }
+  $lx.Add("${name}_sonne_h=" + (LxZahl $sonne 1))
+  $lxJson.tage += [ordered]@{
+    datum = $schluessel; kwh = [math]::Round((LxSumme $proDach), 2); kwh_dach = @($proDach | ForEach-Object { [math]::Round($_, 2) })
+    peak_kw = [math]::Round($peak, 3); peak_stunde = $peakStunde; sonne_h = $(if ($null -ne $sonne) { [math]::Round($sonne, 1) } else { $null })
+    kw_stunden = $stunden
+  }
+}
+[IO.File]::WriteAllText("$PSScriptRoot/loxone.txt", ($lx -join "`r`n") + "`r`n", $utf8)
+[IO.File]::WriteAllText("$PSScriptRoot/loxone.json", ($lxJson | ConvertTo-Json -Depth 5 -Compress), $utf8)
+
 $heuteKwh = ($summen[$heute] | Measure-Object -Sum).Sum
 Write-Host ("Prognose heute {0}: {1:0.0} kWh, Archiv {2} Tage" -f $heute, $heuteKwh, $archiv.Count)
