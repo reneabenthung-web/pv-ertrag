@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PV Loxone-Schnittstelle</title>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --text:#1c2230; --muted:#667085; --line:#e3e6ec;
+  --accent:#f59e0b; --accent2:#2563eb; --input:#f9fafb; --code:#eef1f5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11141a; --card:#1a1f28; --text:#e8ebf0; --muted:#9aa3b2; --line:#2a313d;
+    --accent:#fbbf24; --accent2:#60a5fa; --input:#141820; --code:#232a35;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11141a; --card:#1a1f28; --text:#e8ebf0; --muted:#9aa3b2; --line:#2a313d;
+  --accent:#fbbf24; --accent2:#60a5fa; --input:#141820; --code:#232a35;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:1.45rem;margin:4px 0 2px}
+h2{font-size:1.05rem;margin:0 0 10px}
+.sub{color:var(--muted);margin:0 0 16px;font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.muted{color:var(--muted)}
+a{color:var(--accent2)}
+code{font:13px/1.4 ui-monospace,Consolas,monospace;background:var(--code);padding:2px 6px;border-radius:6px;word-break:break-all}
+ol{padding-left:20px;margin:0} ol li{margin-bottom:6px}
+button{font:inherit;font-size:.8rem;border:1px solid var(--line);background:var(--input);color:var(--text);border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:#1c1300;font-weight:600;font-size:.9rem;padding:7px 12px}
+.url{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.86rem}
+th,td{padding:6px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500;white-space:nowrap}
+td.wert{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+tr.gruppe td{background:var(--input);font-weight:600;padding-top:10px}
+.filter{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.filter button.aktiv{background:var(--accent);border-color:var(--accent);color:#1c1300;font-weight:600}
+.ok{color:#16a34a}
+footer{color:var(--muted);font-size:.78rem;margin-top:18px}
+</style>
+</head>
+<body>
+<main>
+  <h1>🔌 Loxone-Schnittstelle PV-Prognose</h1>
+  <p class="sub">Alle Werte für den Loxone Miniserver – mit aktuellem Stand, Befehlserkennung zum Kopieren und Vorlage zum Importieren. <a href="./">← zur PV-Prognose</a></p>
+
+  <section class="card">
+    <h2>Adressen</h2>
+    <div class="muted">Für den virtuellen HTTP-Eingang (Text, eine Zeile pro Wert):</div>
+    <div class="url"><code id="urlTxt"></code><button data-kopie="urlTxt">kopieren</button></div>
+    <div class="muted">Dieselben Daten als JSON:</div>
+    <div class="url"><code id="urlJson"></code><button data-kopie="urlJson">kopieren</button></div>
+    <p class="muted" style="margin:6px 0 0;font-size:.85rem">Wird stündlich (ca. xx:23) neu berechnet. Alle Werte sind berechnet (Wetterprognose × Anlage × Korrektur je Dach), keine Messwerte. Zeiten in Ortszeit. Fehlt ein Wert, steht <code>nan</code>.</p>
+  </section>
+
+  <section class="card">
+    <h2>Einrichtung in Loxone Config</h2>
+    <ol>
+      <li><strong>Schnell:</strong> Vorlage herunterladen und in Loxone Config unter <em>Peripherie → Virtuelle Eingänge → Vorlage importieren</em> einlesen. Sie enthält den HTTP-Eingang mit allen Befehlen.<br>
+        <button class="primary" id="btnVorlage" style="margin-top:6px">⬇ Vorlage herunterladen (VI_PV_Prognose.xml)</button>
+        <div class="muted" style="font-size:.8rem;margin-top:4px">Die Vorlage ist nicht mit jeder Config-Version getestet. Falls der Import nicht klappt: Schritte 2–3 von Hand.</div></li>
+      <li><strong>Von Hand:</strong> <em>Virtueller HTTP-Eingang</em> anlegen, URL oben eintragen, Abfragezyklus <code>900</code> Sekunden.</li>
+      <li>Darunter je gewünschten Wert einen <em>Virtueller HTTP-Eingang Befehl</em> anlegen und die <strong>Befehlserkennung</strong> aus der Tabelle unten eintragen (z. B. <code>heute_rest_kwh=\v</code>).</li>
+      <li>Anwendung: z. B. Boiler oder Wallbox freigeben, wenn <code>heute_rest_kwh</code> hoch ist oder <code>kw_h12</code> … <code>kw_h15</code> über einem Schwellwert liegen.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>Alle Werte</h2>
+    <div class="filter" id="filter">
+      <button data-f="alle" class="aktiv">Alle</button>
+      <button data-f="jetzt">Jetzt &amp; Tage</button>
+      <button data-f="h">Stunden heute</button>
+      <button data-f="m">Stunden morgen</button>
+    </div>
+    <p class="muted" id="stand" style="margin:0 0 8px;font-size:.85rem">Lade …</p>
+    <div class="scroll"><table id="tabelle"></table></div>
+  </section>
+
+  <footer>Daten: Open-Meteo.com (CC BY 4.0), berechnet für die PV-Anlage in Gamprin.</footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const BASIS = new URL('./', location.href).href;
+const URL_TXT = BASIS + 'loxone.txt', URL_JSON = BASIS + 'loxone.json';
+$('urlTxt').textContent = URL_TXT; $('urlJson').textContent = URL_JSON;
+
+// Bedeutung und Einheit je Name
+function beschreibung(name) {
+  let m;
+  const dach = s => s === 'd1' ? ' – Dach 1' : s === 'd2' ? ' – Dach 2' : '';
+  if (name === 'stand') return ['Zeitpunkt der Berechnung', ''];
+  if (name === 'stunde') return ['Stunde der Berechnung (0–23)', ''];
+  if ((m = name.match(/^jetzt_kw(?:_(d\d))?$/))) return ['Leistung der laufenden Stunde' + dach(m[1]), 'kW'];
+  if (name === 'wolken_jetzt') return ['Bewölkung der laufenden Stunde', '%'];
+  if (name === 'heute_rest_kwh') return ['Erwarteter Ertrag ab jetzt bis Tagesende', 'kWh'];
+  if (name === 'gestern_kwh') return ['Ertrag gestern (mit dem eingetretenen Wetter nachgerechnet)', 'kWh'];
+  const tagName = { heute: 'heute', morgen: 'morgen', uebermorgen: 'übermorgen' };
+  if ((m = name.match(/^(heute|morgen|uebermorgen)_kwh(?:_(d\d))?$/))) return ['Tagesertrag ' + tagName[m[1]] + dach(m[2]), 'kWh'];
+  if ((m = name.match(/^(heute|morgen|uebermorgen)_peak_kw$/))) return ['Höchste Stundenleistung ' + tagName[m[1]], 'kW'];
+  if ((m = name.match(/^(heute|morgen|uebermorgen)_peak_stunde$/))) return ['Beginn der Stunde mit der höchsten Leistung ' + tagName[m[1]], 'Uhr'];
+  if ((m = name.match(/^(heute|morgen|uebermorgen)_sonne_h$/))) return ['Sonnenstunden ' + tagName[m[1]], 'h'];
+  if ((m = name.match(/^kw_([hm])(\d\d)$/))) { const h = +m[2]; return [`Leistung ${m[1] === 'h' ? 'heute' : 'morgen'} ${m[2]}:00–${String((h + 1) % 24).padStart(2, '0')}:00`, 'kW']; }
+  return ['', ''];
+}
+const gruppe = name => /^kw_h/.test(name) ? 'h' : /^kw_m/.test(name) ? 'm' : 'jetzt';
+
+let WERTE = [], filter = 'alle';
+function zeigeTabelle() {
+  const titel = { jetzt: 'Jetzt und Tageswerte', h: 'Leistung je Stunde – heute', m: 'Leistung je Stunde – morgen' };
+  let zeilen = '', letzte = null;
+  WERTE.filter(w => filter === 'alle' || gruppe(w.name) === filter).forEach(w => {
+    const g = gruppe(w.name);
+    if (g !== letzte) { zeilen += `<tr class="gruppe"><td colspan="3">${titel[g]}</td></tr>`; letzte = g; }
+    const [text, einheit] = beschreibung(w.name);
+    const befehl = w.name + '=\\v';
+    zeilen += `<tr><td><code>${befehl}</code> <button data-text="${befehl}">kopieren</button></td>
+      <td class="wert">${w.wert}${einheit && w.wert !== 'nan' && w.name !== 'stand' ? ' ' + einheit : ''}</td><td>${text}</td></tr>`;
+  });
+  $('tabelle').innerHTML = `<tr><th>Befehlserkennung</th><th style="text-align:right">aktuell</th><th>Bedeutung</th></tr>` + zeilen;
+}
+
+async function laden() {
+  try {
+    const r = await fetch(URL_TXT + '?t=' + Date.now());
+    if (!r.ok) throw new Error('loxone.txt: ' + r.status);
+    WERTE = (await r.text()).split(/\r?\n/).filter(z => z.includes('=')).map(z => {
+      const i = z.indexOf('='); return { name: z.slice(0, i), wert: z.slice(i + 1) };
+    });
+    const st = WERTE.find(w => w.name === 'stand');
+    $('stand').textContent = `${WERTE.length} Werte · Stand ${st ? st.wert : '–'}`;
+    zeigeTabelle();
+  } catch (e) { $('stand').innerHTML = '<span style="color:#dc2626">Fehler beim Laden: ' + e.message + '</span>'; }
+}
+
+// Vorlage für den Import in Loxone Config
+function xml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+$('btnVorlage').onclick = () => {
+  const befehle = WERTE.filter(w => w.name !== 'stand').map(w => {
+    const [text, einheit] = beschreibung(w.name);
+    const unit = einheit === 'kWh' || einheit === 'kW' ? `<v.2> ${einheit}` : einheit === 'h' ? '<v.1> h' : einheit === '%' ? '<v> %' : '<v>';
+    return `\t<VirtualInHttpCmd Title="${xml(w.name)}" Comment="${xml(text)}" Check="${xml(w.name)}=\\v" Signed="true" Analog="true" ` +
+      `SourceValLow="0" DestValLow="0" SourceValHigh="100" DestValHigh="100" DefVal="0" MinVal="-10000" MaxVal="10000" Unit="${xml(unit)}" HintText=""/>`;
+  });
+  const inhalt = `<?xml version="1.0" encoding="utf-8"?>\n<VirtualInHttp Title="PV Prognose" Comment="PV-Prognose Gamprin (berechnet)" Address="${xml(URL_TXT)}" PollingTime="900">\n` +
+    `\t<Info templateType="2" minVersion="16000610"/>\n` + befehle.join('\n') + `\n</VirtualInHttp>\n`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([inhalt], { type: 'application/xml' }));
+  a.download = 'VI_PV_Prognose.xml'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+// Kopieren
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button[data-text],button[data-kopie]'); if (!b) return;
+  const text = b.dataset.text ?? $(b.dataset.kopie).textContent;
+  try { await navigator.clipboard.writeText(text); } catch {
+    const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+  }
+  const alt = b.textContent; b.textContent = '✓ kopiert'; b.classList.add('ok'); setTimeout(() => { b.textContent = alt; b.classList.remove('ok'); }, 1200);
+});
+$('filter').addEventListener('click', e => {
+  const b = e.target.closest('button[data-f]'); if (!b) return;
+  filter = b.dataset.f; document.querySelectorAll('#filter button').forEach(x => x.classList.toggle('aktiv', x === b)); zeigeTabelle();
+});
+
+laden();
+setInterval(laden, 15 * 60e3);
+</script>
+</body>
+</html>
